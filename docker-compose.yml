@@ -1,0 +1,88 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  autoda-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: autoda-agent
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data:ro
+      - ./ecommerce.db:/app/ecommerce.db:ro
+    environment:
+      - CONFIG_PATH=/app/config.yaml
+      - LLM_MODE=${LLM_MODE:-public}
+      - PRIVATE_LLM_URL=${PRIVATE_LLM_URL:-}
+      - PRIVATE_LLM_API_KEY=${PRIVATE_LLM_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DB_HOST=mysql
+      - DB_PORT=3306
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - autoda-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:latest
+    container_name: autoda-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - autoda-network
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.0
+    container_name: autoda-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD:-autoda2024}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-autoda}
+      - MYSQL_USER=${MYSQL_USER:-autoda}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-autoda2024}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_PASSWORD:-autoda2024}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - autoda-network
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  autoda-network:
+    driver: bridge

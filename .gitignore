@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.tox/
+.eggs/
+*.egg-info/
+*.egg
+
+# Data
+*.db
+*.sqlite
+data/
+*.csv
+*.xlsx
+*.xls
+
+# Streamlit
+.streamlit/
+*.log
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+.env
+
+# Cache
+.cache/
+*.pkl
+*.pickle
+
+# Security
+secrets/
+*.key
+*.pem
+.env.local
+.env.*.local
+
+# Build
+dist/
+build/
+*.spec

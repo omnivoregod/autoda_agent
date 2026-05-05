@@ -1,0 +1,90 @@
+# AutoDA-Agent 配置文件
+# 统一管理数据库、LLM、缓存、脱敏等配置
+
+# 数据库配置
+database:
+  type: sqlite  # sqlite / mysql / postgresql / clickhouse
+  path: ecommerce.db  # SQLite数据库路径
+
+# MySQL配置（当type为mysql时使用）
+mysql:
+  host: mysql
+  port: 3306
+  user: root
+  password: autoda2024
+  database: autoda
+  charset: utf8mb4
+  timeout: 30
+
+# PostgreSQL配置（当type为postgresql时使用）
+postgresql:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: password
+  database: autoda
+  schema: public
+
+# ClickHouse配置（当type为clickhouse时使用）
+clickhouse:
+  host: localhost
+  port: 8123
+  database: default
+  user: default
+  password: ""
+
+# LLM配置
+llm:
+  mode: public  # public / private
+  api_key: ""  # OpenAI API Key
+  base_url: ""  # 私有LLM地址，如 http://localhost:8000/v1
+  model: gpt-3.5-turbo  # 模型名称
+  temperature: 0.7  # 生成温度
+
+# 缓存配置
+cache:
+  enabled: true  # 是否启用Redis缓存
+  host: redis  # Redis主机
+  port: 6379  # Redis端口
+  db: 0  # 数据库编号
+  expire_seconds: 3600  # 默认过期时间（秒）
+  key_prefix: "autoda:"  # 键名前缀
+
+# 数据脱敏配置
+masking:
+  enabled: true  # 是否启用脱敏
+  rules:
+    phone:
+      enabled: true
+      pattern: '^(\d{3})\d{4}(\d{4})$'
+      replacement: '\1****\2'
+    email:
+      enabled: true
+      pattern: '^(\w)\w+@(\w+\.\w+)$'
+      replacement: '\1**@\2'
+    order_id:
+      enabled: true
+      pattern: '^(\w{4})\w+(\w{4})$'
+      replacement: '\1****\2'
+
+# 脱敏字段映射（表名 -> 字段名 -> 规则）
+masking_columns:
+  orders:
+    customer_phone: phone
+    email: email
+    order_id: order_id
+  customers:
+    phone: phone
+    email: email
+
+# 重试配置
+retry:
+  max_attempts: 3  # 最大重试次数
+  wait_multiplier: 1  # 等待时间倍增因子
+  wait_min: 2  # 最小等待时间（秒）
+  wait_max: 10  # 最大等待时间（秒）
+
+# 日志配置
+logging:
+  level: INFO  # DEBUG / INFO / WARNING / ERROR
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
