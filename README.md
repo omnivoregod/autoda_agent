@@ -25,6 +25,130 @@ AutoDA-Agent是一个基于Python + Streamlit + LangChain的智能电商数据�
 - **大模型集成**：LangChain、OpenAI API格式（支持DeepSeek等）
 - **缓存**：Redis
 
+## 系统架构图
+
+```mermaid
+graph TB
+    subgraph 前端层["前端层 (Streamlit)"]
+        A[用户界面] --> B[数据上传]
+        A --> C[自然语言查询]
+        A --> D[可视化展示]
+        A --> E[报告输出]
+    end
+
+    subgraph 工作流层["六阶段工作流"]
+        F[阶段1: 需求诊断] --> G[阶段2: 字段分析]
+        G --> H[阶段3: 数据获取]
+        H --> I[阶段4: 深度诊断]
+        I --> J[阶段5: 方案输出]
+        J --> K[阶段6: 效果追踪]
+    end
+
+    subgraph 核心模块["核心模块"]
+        L[LangChain LLM]
+        M[语义表名匹配]
+        N[字段名匹配]
+        O[数据质量检测]
+    end
+
+    subgraph 数据层["数据层"]
+        P[(SQLite)]
+        Q[(MySQL)]
+        R[(PostgreSQL)]
+        S[(ClickHouse)]
+    end
+
+    B --> H
+    C --> F
+    D --> I
+    E --> J
+    F --> L
+    G --> M
+    G --> N
+    H --> O
+    H --> P
+    H --> Q
+    H --> R
+    H --> S
+```
+
+## 六阶段工作流详解
+
+```mermaid
+flowchart LR
+    subgraph 阶段1["阶段1: 需求诊断与目标对齐"]
+        A1[用户输入] --> A2[clarify_requirement]
+        A2 --> A3[build_metric_tree]
+        A3 --> A4[业务指标体系]
+    end
+
+    subgraph 阶段2["阶段2: 字段语义分析与需求匹配"]
+        A4 --> B1[扫描数据库]
+        B1 --> B2[analyze_field_semantics]
+        B2 --> B3[校验数据匹配]
+        B3 --> B4[字段语义映射]
+    end
+
+    subgraph 阶段3["阶段3: 数据获取与质检验证"]
+        B4 --> C1[run_sql_query]
+        C1 --> C2[data_qa检测]
+        C2 --> C3[Redis缓存]
+        C3 --> C4[清洗后数据]
+    end
+
+    subgraph 阶段4["阶段4: 深度诊断与根因推演"]
+        C4 --> D1[root_cause_analysis]
+        D1 --> D2[渠道分析]
+        D1 --> D3[支付分析]
+        D1 --> D4[用户分析]
+        D1 --> D5[产品分析]
+        D2 --> D6[根因洞察]
+        D3 --> D6
+        D4 --> D6
+        D5 --> D6
+    end
+
+    subgraph 阶段5["阶段5: 方案输出与商业决策"]
+        D6 --> E1[generate_json_report]
+        E1 --> E2[generate_comprehensive_report]
+        E2 --> E3[生成可视化图表]
+        E3 --> E4[商业决策建议]
+    end
+
+    subgraph 阶段6["阶段6: 效果追踪闭环"]
+        E4 --> F1[generate_performance_report]
+        F1 --> F2[追踪配置]
+    end
+```
+
+## 数据处理流程图
+
+```mermaid
+flowchart TB
+    A[CSV文件上传] --> B[data_processor]
+    B --> C{检测文件类型}
+    C -->|orders| D[temp_orders表]
+    C -->|customers| E[temp_customers表]
+    C -->|products| F[temp_products表]
+    C -->|sessions| G[temp_sessions表]
+    C -->|events| H[temp_events表]
+    D --> I[数据清洗]
+    E --> I
+    F --> I
+    G --> I
+    H --> I
+    I --> J[(ecommerce.db)]
+    J --> K[run_sql_query]
+    K --> L{语义匹配}
+    L -->|表名| M[match_table_name]
+    L -->|字段名| N[match_field_name]
+    M --> O[执行SQL]
+    N --> O
+    O --> P[结果DataFrame]
+    P --> Q[数据可视化]
+    P --> R[报告生成]
+```
+
 ## 项目结构
 
 ```
