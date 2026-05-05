@@ -28,7 +28,7 @@ class AnalysisExecutor:
 
     def execute(self, sql_query: str, db_path: str = "ecommerce.db") -> AnalysisResult:
         """
-        执行SQL查询
+        执行SQL查询（使用语义表名匹配）
 
         Args:
             sql_query: SQL查询字符串
@@ -37,20 +37,35 @@ class AnalysisExecutor:
         Returns:
             AnalysisResult: 分析结果对象
         """
-        import sqlite3
+        from tools import run_sql_query
         import time
 
         start_time = time.time()
 
         try:
-            # 连接数据库
-            conn = sqlite3.connect(db_path)
-            
-            # 执行查询
-            df = pd.read_sql_query(sql_query, conn)
-            
-            # 关闭连接
-            conn.close()
+            # 使用语义表名匹配执行SQL查询
+            df = run_sql_query(sql_query)
+
+            # 检查是否有错误
+            if 'error' in df.columns:
+                execution_time = time.time() - start_time
+                
+                # 记录错误
+                self.execution_history.append({
+                    'sql': sql_query,
+                    'execution_time': execution_time,
+                    'error': df['error'].iloc[0],
+                    'timestamp': datetime.now().isoformat()
+                })
+
+                return AnalysisResult(
+                    success=False,
+                    data=None,
+                    error_message=df['error'].iloc[0],
+                    execution_time=execution_time,
+                    row_count=0,
+                    column_count=0
+                )
 
             execution_time = time.time() - start_time
 

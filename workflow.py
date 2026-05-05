@@ -279,18 +279,21 @@ class WorkflowManager:
                     }
         
         # 生成JSON报告
-        # 从数据库获取完整的原始数据用于匹配检查
-        import sqlite3
-        import pandas as pd
-        conn = sqlite3.connect('ecommerce.db')
+        # 从数据库获取完整的原始数据用于匹配检查（使用语义表名匹配）
+        from tools import run_sql_query
         
-        # 获取完整的orders数据
-        orders_df = pd.read_sql('SELECT * FROM orders', conn)
-        order_items_df = pd.read_sql('SELECT * FROM order_items', conn)
+        # 获取完整的orders数据（使用语义表名匹配）
+        orders_df = run_sql_query('SELECT * FROM orders')
+        order_items_df = run_sql_query('SELECT * FROM order_items')
         
-        # 合并数据以获取完整的分析数据
-        full_data = pd.merge(orders_df, order_items_df, on='order_id', how='left')
-        conn.close()
+        # 检查是否有错误
+        if 'error' in orders_df.columns:
+            full_data = orders_df
+        elif 'error' in order_items_df.columns:
+            full_data = order_items_df
+        else:
+            # 合并数据以获取完整的分析数据
+            full_data = pd.merge(orders_df, order_items_df, on='order_id', how='left')
         
         # 使用完整数据进行报告生成
         if api_key:
@@ -364,41 +367,32 @@ class WorkflowManager:
     def _stage2_field_semantic_analysis(self, stage1_output: Dict[str, Any]) -> Dict[str, Any]:
         """阶段二：字段语义分析与需求匹配"""
         try:
-            import sqlite3
             import pandas as pd
             from field_semantic import analyze_field_semantics
             from guardrail import Guardrail
+            from tools import get_available_tables, get_table_columns
             
             user_input = stage1_output.get('user_input', '')
             business_context = stage1_output.get('business_context', {})
             
-            # 1. 从数据库获取所有表的字段信息
-            conn = sqlite3.connect('ecommerce.db')
-            cursor = conn.cursor()
-            
-            # 获取所有表名
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = cursor.fetchall()
+            # 1. 从数据库获取所有表的字段信息（使用语义表名匹配）
+            tables = get_available_tables('ecommerce.db')
             
             all_field_semantics = {}
             all_data_fields = []
             
-            for table in tables:
-                table_name = table[0]
+            for table_name in tables:
                 # 获取表结构
-                cursor.execute(f"PRAGMA table_info({table_name})")
-                columns = cursor.fetchall()
+                columns = get_table_columns('ecommerce.db', table_name)
                 
                 if columns:
-                    field_names = [col[1] for col in columns]
+                    field_names = columns
                     all_data_fields.extend(field_names)
                     
                     # 分析字段语义
                     field_semantics = analyze_field_semantics(field_names)
                     for field, sem in field_semantics.items():
                         all_field_semantics[f"{table_name}.{field}"] = sem
-            
-            conn.close()
             
             # 2. 提取用户问题中需要的字段类型
             guardrail = Guardrail()

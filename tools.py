@@ -5,15 +5,235 @@ from scipy import stats
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+import re
+from difflib import get_close_matches
+
+# 语义表名映射 - 常见业务表名的同义词
+TABLE_NAME_SYNONYMS = {
+    'orders': ['orders', 'order', '订单', '订单表', '销售订单', 'purchase', 'sales_order'],
+    'customers': ['customers', 'customer', '客户', '客户表', '用户', 'user', 'users'],
+    'products': ['products', 'product', '产品', '商品', '商品表', '货品'],
+    'events': ['events', 'event', '事件', '事件表', '行为', '用户行为', 'log', 'logs'],
+    'sessions': ['sessions', 'session', '会话', '会话表', '访问', '访问记录'],
+    'reviews': ['reviews', 'review', '评论', '评价', '反馈'],
+    'order_items': ['order_items', 'order_item', '订单项', '订单明细', '商品明细', 'items']
+}
+
+# 语义字段名映射 - 常见字段名的同义词
+FIELD_NAME_SYNONYMS = {
+    # 通用字段
+    'id': ['id', '编号', '标识', '唯一标识'],
+    'name': ['name', '名称', '名字'],
+    'time': ['time', '时间', '日期', 'timestamp', 'datetime', 'date'],
+    'status': ['status', '状态', '状态码'],
+    
+    # orders 表字段
+    'order_id': ['order_id', '订单id', '订单编号', 'order_no', '订单号'],
+    'customer_id': ['customer_id', '客户id', '用户id', '用户编号', '买家id'],
+    'total_usd': ['total_usd', '金额', '订单金额', '总价', '总金额', '销售额'],
+    'order_time': ['order_time', '下单时间', '购买时间', '订单时间'],
+    'status': ['status', '订单状态', '状态'],
+    
+    # customers 表字段
+    'email': ['email', '邮箱', '电子邮件'],
+    'phone': ['phone', '手机', '电话', '手机号码'],
+    'register_time': ['register_time', '注册时间', '加入时间'],
+    
+    # products 表字段
+    'product_id': ['product_id', '商品id', '产品id', '商品编号'],
+    'price': ['price', '价格', '单价'],
+    'category': ['category', '分类', '类别'],
+    
+    # events 表字段
+    'event_type': ['event_type', '事件类型', '行为类型', '操作类型'],
+    'session_id': ['session_id', '会话id', '访问id'],
+    
+    # sessions 表字段
+    'start_time': ['start_time', '开始时间', '访问时间'],
+    'end_time': ['end_time', '结束时间'],
+    'page_views': ['page_views', '页面浏览量', '访问页数']
+}
+
+def get_available_tables(db_path):
+    """获取数据库中可用的表名"""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cursor.fetchall()]
+            return tables
+    except Exception as e:
+        print(f"获取表名失败: {e}")
+        return []
+
+def get_table_columns(db_path, table_name):
+    """获取指定表的字段列表"""
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            columns = [row[1] for row in cursor.fetchall()]
+            return columns
+    except Exception as e:
+        print(f"获取字段列表失败: {e}")
+        return []
+
+def match_field_name(query_field, available_fields):
+    """使用语义分析和模糊匹配找到最相似的字段名"""
+    if not available_fields:
+        return None
+    
+    query_field_lower = query_field.lower()
+    
+    # 精确匹配
+    for field in available_fields:
+        if field.lower() == query_field_lower:
+            return field
+    
+    # 语义匹配 - 使用同义词库
+    for standard_name, synonyms in FIELD_NAME_SYNONYMS.items():
+        if query_field_lower in [s.lower() for s in synonyms]:
+            # 检查标准字段名是否在可用字段中
+            if standard_name.lower() in [f.lower() for f in available_fields]:
+                return next(f for f in available_fields if f.lower() == standard_name.lower())
+            # 检查同义词是否在可用字段中
+            for synonym in synonyms:
+                if synonym.lower() in [f.lower() for f in available_fields]:
+                    return next(f for f in available_fields if f.lower() == synonym.lower())
+    
+    # 模糊匹配 - 使用编辑距离
+    matches = get_close_matches(query_field_lower, [f.lower() for f in available_fields], n=1, cutoff=0.6)
+    if matches:
+        return next(f for f in available_fields if f.lower() == matches[0])
+    
+    return None
+
+def replace_field_names(query, db_path, table_name):
+    """替换查询中的字段名为实际存在的字段名（不区分大小写）"""
+    available_fields = get_table_columns(db_path, table_name)
+    if not available_fields:
+        return query, []
+    
+    select_pattern = r'SELECT\s+(.+?)(?=\s+FROM)'
+    select_match = re.search(select_pattern, query, re.IGNORECASE | re.DOTALL)
+    
+    new_query = query
+    replaced_fields = []
+    
+    if select_match:
+        select_part = select_match.group(1)
+        fields = [f.strip() for f in select_part.split(',')]
+        
+        for field in fields:
+            has_alias = bool(re.search(r'\s+AS\s+\w+$', field, flags=re.IGNORECASE))
+            field_for_match = re.sub(r'\s+AS\s+\w+$', '', field, flags=re.IGNORECASE).strip()
+            field_after_func = re.sub(r'^(COUNT|SUM|AVG|MAX|MIN)\s*\(\s*(\*|\w+)\s*\)$', r'\2', field_for_match, flags=re.IGNORECASE).strip()
+            
+            if field_after_func == '*':
+                continue
+            
+            if not field_after_func or '(' in field_after_func or ')' in field_after_func:
+                continue
+            
+            # 如果字段是聚合函数的别名且不在表字段中，不进行替换（避免误替换 COUNT(*) as orders -> COUNT(*) as order_id）
+            is_aggregate_alias = has_alias and field_for_match != field_after_func
+            if is_aggregate_alias and field_after_func.lower() not in [f.lower() for f in available_fields]:
+                # 聚合函数别名不在表字段中，跳过替换
+                continue
+            
+            # 只有当字段名不在表字段列表中时才进行匹配
+            if field_after_func.lower() not in [f.lower() for f in available_fields]:
+                matched_field = match_field_name(field_after_func, available_fields)
+                if matched_field and matched_field.lower() != field_after_func.lower():
+                    if has_alias:
+                        alias_match = re.search(r'(.+\s+AS\s+)(\w+)$', field, flags=re.IGNORECASE)
+                        if alias_match:
+                            new_field = alias_match.group(1) + matched_field
+                            new_query = new_query.replace(field, new_field, 1)
+                            replaced_fields.append(f"{field_after_func} -> {matched_field}")
+                    else:
+                        new_query = new_query.replace(field, matched_field, 1)
+                        replaced_fields.append(f"{field_after_func} -> {matched_field}")
+    
+    return new_query, replaced_fields
+
+def match_table_name(query_table, available_tables):
+    """使用语义分析匹配最相似的表名"""
+    if not available_tables:
+        return None
+    
+    query_table_lower = query_table.lower()
+    
+    # 精确匹配
+    for table in available_tables:
+        if table.lower() == query_table_lower:
+            return table
+    
+    # 检查带 temp_ 前缀的表名
+    temp_table_name = f"temp_{query_table_lower}"
+    for table in available_tables:
+        if table.lower() == temp_table_name:
+            return table
+    
+    # 语义匹配 - 使用同义词库
+    for standard_name, synonyms in TABLE_NAME_SYNONYMS.items():
+        if query_table_lower in [s.lower() for s in synonyms]:
+            # 检查标准表名是否在可用表中
+            if standard_name in available_tables:
+                return standard_name
+            # 检查带 temp_ 前缀的标准表名
+            temp_standard = f"temp_{standard_name}"
+            if temp_standard in available_tables:
+                return temp_standard
+            # 检查同义词是否在可用表中
+            for synonym in synonyms:
+                if synonym.lower() in [t.lower() for t in available_tables]:
+                    return next(t for t in available_tables if t.lower() == synonym.lower())
+                # 检查带 temp_ 前缀的同义词
+                temp_synonym = f"temp_{synonym.lower()}"
+                if temp_synonym in [t.lower() for t in available_tables]:
+                    return next(t for t in available_tables if t.lower() == temp_synonym)
+    
+    # 模糊匹配 - 使用编辑距离
+    matches = get_close_matches(query_table_lower, [t.lower() for t in available_tables], n=1, cutoff=0.6)
+    if matches:
+        return next(t for t in available_tables if t.lower() == matches[0])
+    
+    return None
+
+def replace_table_name(query, available_tables):
+    """替换查询中的表名为实际存在的表名（只替换 FROM 和 JOIN 子句中的表名）"""
+    new_query = query
+    replaced_tables = []
+    
+    # 只替换 FROM 和 JOIN 子句后的表名（不替换别名）
+    from_join_pattern = r'(\bFROM\s+)(\w+)|(\bJOIN\s+)(\w+)'
+    
+    def replace_table(match):
+        if match.group(1):  # FROM 匹配
+            prefix = match.group(1)
+            table_name = match.group(2)
+        else:  # JOIN 匹配
+            prefix = match.group(3)
+            table_name = match.group(4)
+        matched_table = match_table_name(table_name, available_tables)
+        if matched_table and matched_table.lower() != table_name.lower():
+            replaced_tables.append(f"{table_name} -> {matched_table}")
+            return f"{prefix}{matched_table}"
+        return match.group(0)
+    
+    new_query = re.sub(from_join_pattern, replace_table, new_query, flags=re.IGNORECASE)
+    
+    return new_query, replaced_tables
 
 # SQL执行器
 def run_sql_query(query: str) -> pd.DataFrame:
     """
-    执行SQL查询并返回结果
-
+    执行SQL查询并返回结果（支持表名和字段名的语义匹配）
+    
     Args:
         query: SQL查询语句
-
+        
     Returns:
         DataFrame: 查询结果
     """
@@ -35,10 +255,52 @@ def run_sql_query(query: str) -> pd.DataFrame:
             error_df['query'] = [query]
             return error_df
         
+        # 获取可用表名
+        available_tables = get_available_tables(db_path)
+        
+        # 使用语义匹配替换表名
+        new_query, replaced_tables = replace_table_name(query, available_tables)
+        
+        # 提取查询中的表名，用于字段匹配
+        table_pattern = r'\bFROM\s+(\w+)\b'
+        table_matches = re.findall(table_pattern, new_query, re.IGNORECASE)
+        
+        # 对每个表进行字段名替换
+        replaced_fields = []
+        for table_name in table_matches:
+            new_query, replaced = replace_field_names(new_query, db_path, table_name)
+            replaced_fields.extend(replaced)
+        
         # 使用with语句管理数据库连接
         with sqlite3.connect(db_path) as conn:
-            df = pd.read_sql_query(query, conn)
+            df = pd.read_sql_query(new_query, conn)
+        
+        # 如果有表名替换，添加提示信息
+        all_replacements = []
+        if replaced_tables:
+            all_replacements.extend([f"表: {r}" for r in replaced_tables])
+        if replaced_fields:
+            all_replacements.extend([f"字段: {r}" for r in replaced_fields])
+        
+        if all_replacements:
+            df['_replacements'] = ', '.join(all_replacements)
+        
         return df
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):
+            # 表不存在时提供更友好的错误信息
+            available_tables = get_available_tables(db_path)
+            if available_tables:
+                error_msg = f"表不存在。可用表名: {', '.join(available_tables)}"
+            else:
+                error_msg = "数据库中没有表，请先上传数据文件"
+            error_df = pd.DataFrame({'error': [error_msg]})
+            error_df['query'] = [query]
+            return error_df
+        else:
+            error_df = pd.DataFrame({'error': [str(e)]})
+            error_df['query'] = [query]
+            return error_df
     except Exception as e:
         # 返回更详细的错误信息
         error_df = pd.DataFrame({'error': [str(e)]})
@@ -79,526 +341,487 @@ def calculate_rfm() -> pd.DataFrame:
             'f_score': [],
             'm_score': [],
             'rfm_score': [],
-            'avg_order_value': [],
-            'segment': []
+            'rfm_level': []
         })
         return empty_df
     
-    # 计算Recency（最近购买天数）
-    today = datetime.now()
-    df['last_purchase_date'] = pd.to_datetime(df['last_purchase_date'], format='mixed')
-    df['recency'] = (today - df['last_purchase_date']).dt.days
+    # 计算RFM指标
+    current_date = datetime.now()
+    df['last_purchase_date'] = pd.to_datetime(df['last_purchase_date'])
+    df['recency'] = (current_date - df['last_purchase_date']).dt.days
     
-    # 计算RFM得分（1-5分，5分最高）
-    try:
-        df['r_score'] = pd.qcut(df['recency'], 5, labels=[5, 4, 3, 2, 1])
-    except:
-        df['r_score'] = 3  # 默认给3分
+    # 计算RFM得分（1-5分）
+    df['r_score'] = pd.qcut(df['recency'], 5, labels=[5, 4, 3, 2, 1]).astype(int)
+    df['f_score'] = pd.qcut(df['frequency'].rank(method='first'), 5, labels=[1, 2, 3, 4, 5]).astype(int)
+    df['m_score'] = pd.qcut(df['monetary'], 5, labels=[1, 2, 3, 4, 5]).astype(int)
     
-    # 处理frequency值相同的情况
-    if df['frequency'].nunique() <= 1:
-        df['f_score'] = 3  # 默认给3分
-    else:
-        try:
-            df['f_score'] = pd.qcut(df['frequency'], 5, labels=[1, 2, 3, 4, 5])
-        except:
-            df['f_score'] = 3
+    # 计算RFM总分
+    df['rfm_score'] = df['r_score'] * 100 + df['f_score'] * 10 + df['m_score']
     
-    # 处理monetary值相同的情况
-    if df['monetary'].nunique() <= 1:
-        df['m_score'] = 3  # 默认给3分
-    else:
-        try:
-            df['m_score'] = pd.qcut(df['monetary'], 5, labels=[1, 2, 3, 4, 5])
-        except:
-            df['m_score'] = 3
-    
-    # 计算总得分
-    df['rfm_score'] = df['r_score'].astype(int) + df['f_score'].astype(int) + df['m_score'].astype(int)
-    
-    # 计算平均订单价值
-    df['avg_order_value'] = df['monetary'] / df['frequency']
-    
-    # 用户分层
-    def get_user_segment(row):
-        r = int(row['r_score'])
-        f = int(row['f_score'])
-        m = int(row['m_score'])
-        
-        if r >= 4 and f >= 4 and m >= 4:
-            return '核心高频'
-        elif r >= 3 and f >= 3 and m >= 3:
-            return '重要客户'
-        elif r >= 4 and (f <= 2 or m <= 2):
-            return '重要挽留'
-        elif r <= 2 and f >= 3 and m >= 3:
-            return '重要发展'
-        elif r <= 2 and f <= 2 and m >= 3:
-            return '重要价值'
-        elif r <= 2 and f <= 2 and m <= 2:
-            return '低价值'
-        else:
+    # RFM分层
+    def get_rfm_level(row):
+        if row['rfm_score'] >= 444:
+            return '重要价值客户'
+        elif row['rfm_score'] >= 333:
+            return '潜力客户'
+        elif row['rfm_score'] >= 222:
             return '一般客户'
+        else:
+            return '流失客户'
     
-    df['segment'] = df.apply(get_user_segment, axis=1)
+    df['rfm_level'] = df.apply(get_rfm_level, axis=1)
     
     return df
 
-# 获取RFM分层统计
-def get_rfm_segment_stats() -> pd.DataFrame:
+# 销售漏斗计算
+def calculate_funnel() -> pd.DataFrame:
     """
-    获取RFM分层统计数据
+    计算销售漏斗数据
     
     Returns:
-        DataFrame: RFM分层统计
+        DataFrame: 包含漏斗各阶段的数据
     """
-    rfm_df = calculate_rfm()
+    # 查询各阶段数据
+    queries = [
+        ("浏览", "SELECT COUNT(DISTINCT session_id) as count FROM events WHERE event_type='view'"),
+        ("加购", "SELECT COUNT(DISTINCT session_id) as count FROM events WHERE event_type='add_to_cart'"),
+        ("下单", "SELECT COUNT(DISTINCT session_id) as count FROM events WHERE event_type='purchase'"),
+        ("支付", "SELECT COUNT(DISTINCT order_id) as count FROM orders WHERE status='completed'")
+    ]
     
-    if 'error' in rfm_df.columns:
-        return rfm_df
+    funnel_data = []
+    for stage, query in queries:
+        df = run_sql_query(query)
+        if 'error' in df.columns:
+            # 如果events表不存在，尝试从orders表获取数据
+            if stage == '浏览':
+                count = 0
+            elif stage == '加购':
+                count = 0
+            elif stage == '下单':
+                df = run_sql_query("SELECT COUNT(DISTINCT session_id) as count FROM orders")
+                count = df['count'].iloc[0] if not df.empty else 0
+            else:
+                df = run_sql_query("SELECT COUNT(*) as count FROM orders WHERE status='completed'")
+                count = df['count'].iloc[0] if not df.empty else 0
+        else:
+            count = df['count'].iloc[0] if not df.empty else 0
+        funnel_data.append({'stage': stage, 'count': count})
     
-    # 检查数据是否为空
-    if rfm_df.empty:
-        # 返回空DataFrame，包含必要的列
-        empty_df = pd.DataFrame({
-            'segment': [],
-            'user_count': [],
-            'rfm_score': [],
-            'monetary': [],
-            'frequency': [],
-            'recency': [],
-            'avg_order_value': [],
-            'monetary_percentage': []
-        })
-        return empty_df
+    df_funnel = pd.DataFrame(funnel_data)
     
-    # 统计各分层的用户数、平均RFM得分、平均消费金额
-    segment_stats = rfm_df.groupby('segment').agg({
-        'user_id': 'count',
-        'rfm_score': 'mean',
-        'monetary': 'sum',
-        'frequency': 'mean',
-        'recency': 'mean',
-        'avg_order_value': 'mean'
-    }).reset_index()
+    # 计算转化率
+    df_funnel['conversion_rate'] = 0.0
+    for i in range(1, len(df_funnel)):
+        if df_funnel.loc[i-1, 'count'] > 0:
+            df_funnel.loc[i, 'conversion_rate'] = df_funnel.loc[i, 'count'] / df_funnel.loc[i-1, 'count']
     
-    segment_stats.rename(columns={'user_id': 'user_count'}, inplace=True)
-    
-    # 检查monetary总和是否为0，避免除零错误
-    if segment_stats['monetary'].sum() > 0:
-        segment_stats['monetary_percentage'] = segment_stats['monetary'] / segment_stats['monetary'].sum() * 100
-    else:
-        segment_stats['monetary_percentage'] = 0
-    
-    return segment_stats
+    return df_funnel
 
-# A/B统计检验
-def run_ab_test(control_conv: int, control_n: int, test_conv: int, test_n: int) -> dict:
+# 统计检验
+def ab_test_metrics(metric_name: str, group_a: str, group_b: str) -> dict:
     """
-    计算A/B测试的统计显著性
+    执行AB测试统计检验
     
     Args:
-        control_conv: 对照组转化人数
-        control_n: 对照组总人数
-        test_conv: 实验组转化人数
-        test_n: 实验组总人数
-    
+        metric_name: 指标名称（如转化率、平均订单金额等）
+        group_a: A组过滤条件
+        group_b: B组过滤条件
+        
     Returns:
-        dict: 包含转化率、差异、p值等统计结果
+        dict: 包含统计检验结果
     """
-    # 计算转化率
-    control_rate = control_conv / control_n if control_n > 0 else 0
-    test_rate = test_conv / test_n if test_n > 0 else 0
-    rate_diff = test_rate - control_rate
+    # 查询A组数据
+    query_a = f"SELECT {metric_name} FROM orders WHERE {group_a}"
+    df_a = run_sql_query(query_a)
     
-    # 执行Z检验
-    try:
-        _, p_value = stats.proportions_ztest(
-            [test_conv, control_conv],
-            [test_n, control_n]
-        )
-    except:
+    # 查询B组数据
+    query_b = f"SELECT {metric_name} FROM orders WHERE {group_b}"
+    df_b = run_sql_query(query_b)
+    
+    if 'error' in df_a.columns or 'error' in df_b.columns:
+        return {'error': '数据查询失败'}
+    
+    # 执行t检验
+    t_stat, p_value = stats.ttest_ind(df_a[metric_name], df_b[metric_name], equal_var=False)
+    
+    # 计算均值和标准差
+    result = {
+        'group_a_mean': df_a[metric_name].mean(),
+        'group_a_std': df_a[metric_name].std(),
+        'group_a_count': len(df_a),
+        'group_b_mean': df_b[metric_name].mean(),
+        'group_b_std': df_b[metric_name].std(),
+        'group_b_count': len(df_b),
+        't_statistic': t_stat,
+        'p_value': p_value,
+        'significant': p_value < 0.05
+    }
+    
+    return result
+
+def run_ab_test(group_a_filter: str, group_b_filter: str, metric: str = 'total_usd') -> dict:
+    """
+    执行AB测试分析
+    
+    Args:
+        group_a_filter: A组过滤条件
+        group_b_filter: B组过滤条件
+        metric: 测试指标（如 total_usd, order_count 等）
+        
+    Returns:
+        dict: AB测试结果
+    """
+    # 查询A组数据
+    query_a = f"SELECT {metric} FROM orders WHERE {group_a_filter}"
+    df_a = run_sql_query(query_a)
+    
+    # 查询B组数据
+    query_b = f"SELECT {metric} FROM orders WHERE {group_b_filter}"
+    df_b = run_sql_query(query_b)
+    
+    if 'error' in df_a.columns or 'error' in df_b.columns:
+        return {
+            'error': '数据查询失败',
+            'group_a_count': 0,
+            'group_b_count': 0,
+            'group_a_mean': 0,
+            'group_b_mean': 0,
+            'lift': 0,
+            'p_value': 1.0,
+            'significant': False
+        }
+    
+    # 计算统计指标
+    group_a_count = len(df_a)
+    group_b_count = len(df_b)
+    group_a_mean = df_a[metric].mean()
+    group_b_mean = df_b[metric].mean()
+    
+    # 计算提升率
+    if group_a_mean > 0:
+        lift = (group_b_mean - group_a_mean) / group_a_mean * 100
+    else:
+        lift = 0
+    
+    # 执行t检验
+    if group_a_count >= 30 and group_b_count >= 30:
+        t_stat, p_value = stats.ttest_ind(df_a[metric], df_b[metric], equal_var=False)
+        significant = p_value < 0.05
+    else:
         p_value = 1.0
-    
-    # 计算置信区间（95%）
-    se = np.sqrt(test_rate * (1 - test_rate) / test_n + control_rate * (1 - control_rate) / control_n)
-    ci_lower = rate_diff - 1.96 * se
-    ci_upper = rate_diff + 1.96 * se
-    
-    # 判断显著性
-    is_significant = p_value < 0.05
+        significant = False
     
     return {
-        'control_rate': round(control_rate, 4),
-        'test_rate': round(test_rate, 4),
-        'rate_diff': round(rate_diff, 4),
+        'group_a_filter': group_a_filter,
+        'group_b_filter': group_b_filter,
+        'metric': metric,
+        'group_a_count': group_a_count,
+        'group_b_count': group_b_count,
+        'group_a_mean': round(group_a_mean, 2),
+        'group_b_mean': round(group_b_mean, 2),
+        'lift': round(lift, 2),
         'p_value': round(p_value, 4),
-        'ci_lower': round(ci_lower, 4),
-        'ci_upper': round(ci_upper, 4),
-        'is_significant': is_significant
+        'significant': significant
     }
 
-# Plotly绘图 - 漏斗图
-def plot_funnel(data: pd.DataFrame) -> go.Figure:
+def get_ab_conversion(group_a_filter: str, group_b_filter: str) -> dict:
     """
-    绘制漏斗图
+    计算AB测试的转化率
     
     Args:
-        data: 包含阶段和人数的DataFrame，需要有'step'和'count'列
-    
+        group_a_filter: A组过滤条件
+        group_b_filter: B组过滤条件
+        
     Returns:
-        go.Figure: 漏斗图对象
+        dict: 转化率对比结果
     """
-    fig = px.funnel(data, x='count', y='step')
-    fig.update_layout(
-        title='转化漏斗',
-        xaxis_title='人数',
-        yaxis_title='转化阶段'
-    )
-    return fig
+    # 查询A组转化数据
+    query_a = f"SELECT COUNT(*) as conversions FROM orders WHERE {group_a_filter} AND status='completed'"
+    df_a_conv = run_sql_query(query_a)
+    
+    query_a_total = f"SELECT COUNT(*) as total FROM orders WHERE {group_a_filter}"
+    df_a_total = run_sql_query(query_a_total)
+    
+    # 查询B组转化数据
+    query_b = f"SELECT COUNT(*) as conversions FROM orders WHERE {group_b_filter} AND status='completed'"
+    df_b_conv = run_sql_query(query_b)
+    
+    query_b_total = f"SELECT COUNT(*) as total FROM orders WHERE {group_b_filter}"
+    df_b_total = run_sql_query(query_b_total)
+    
+    if 'error' in df_a_conv.columns or 'error' in df_b_conv.columns:
+        return {
+            'error': '数据查询失败',
+            'group_a_conversion': 0,
+            'group_b_conversion': 0,
+            'lift': 0
+        }
+    
+    group_a_conv = df_a_conv['conversions'].iloc[0] if not df_a_conv.empty else 0
+    group_a_total = df_a_total['total'].iloc[0] if not df_a_total.empty else 1
+    group_a_rate = group_a_conv / group_a_total * 100
+    
+    group_b_conv = df_b_conv['conversions'].iloc[0] if not df_b_conv.empty else 0
+    group_b_total = df_b_total['total'].iloc[0] if not df_b_total.empty else 1
+    group_b_rate = group_b_conv / group_b_total * 100
+    
+    lift = (group_b_rate - group_a_rate) / group_a_rate * 100 if group_a_rate > 0 else 0
+    
+    return {
+        'group_a_filter': group_a_filter,
+        'group_b_filter': group_b_filter,
+        'group_a_conversions': group_a_conv,
+        'group_a_total': group_a_total,
+        'group_a_conversion': round(group_a_rate, 2),
+        'group_b_conversions': group_b_conv,
+        'group_b_total': group_b_total,
+        'group_b_conversion': round(group_b_rate, 2),
+        'lift': round(lift, 2)
+    }
 
-# Plotly绘图 - 柱状图
-def plot_bar(data: pd.DataFrame, x: str, y: str, title: str) -> go.Figure:
+def calculate_ab_roi(group_a_filter: str, group_b_filter: str, cost_b: float = 0) -> dict:
     """
-    绘制柱状图
+    计算AB测试的ROI
     
     Args:
-        data: 数据源
-        x: x轴字段
-        y: y轴字段
-        title: 图表标题
-    
+        group_a_filter: A组过滤条件
+        group_b_filter: B组过滤条件
+        cost_b: B组成本（如营销费用）
+        
     Returns:
-        go.Figure: 柱状图对象
+        dict: ROI计算结果
     """
-    fig = px.bar(data, x=x, y=y)
-    fig.update_layout(
-        title=title,
-        xaxis_title=x,
-        yaxis_title=y
-    )
-    return fig
+    # 获取两组数据
+    ab_result = run_ab_test(group_a_filter, group_b_filter, 'total_usd')
+    
+    if 'error' in ab_result:
+        return {
+            'error': '数据查询失败',
+            'roi': 0,
+            'net_gain': 0
+        }
+    
+    # 计算收入差异
+    group_a_revenue = ab_result['group_a_mean'] * ab_result['group_a_count']
+    group_b_revenue = ab_result['group_b_mean'] * ab_result['group_b_count']
+    revenue_diff = group_b_revenue - group_a_revenue
+    
+    # 计算ROI
+    if cost_b > 0:
+        roi = (revenue_diff - cost_b) / cost_b * 100
+    else:
+        roi = 0
+    
+    return {
+        'group_a_filter': group_a_filter,
+        'group_b_filter': group_b_filter,
+        'group_a_revenue': round(group_a_revenue, 2),
+        'group_b_revenue': round(group_b_revenue, 2),
+        'revenue_diff': round(revenue_diff, 2),
+        'cost_b': cost_b,
+        'net_gain': round(revenue_diff - cost_b, 2),
+        'roi': round(roi, 2),
+        'significant': ab_result.get('significant', False)
+    }
 
-# Plotly绘图 - 折线图
-def plot_line(data: pd.DataFrame, x: str, y: str, title: str) -> go.Figure:
+def get_rfm_segment_stats() -> pd.DataFrame:
     """
-    绘制折线图（时间序列）
-    
-    Args:
-        data: 数据源
-        x: x轴字段（通常是日期）
-        y: y轴字段
-        title: 图表标题
+    获取RFM分段的统计信息
     
     Returns:
-        go.Figure: 折线图对象
+        DataFrame: 各RFM分段的统计数据
     """
-    fig = px.line(data, x=x, y=y)
-    fig.update_layout(
-        title=title,
-        xaxis_title=x,
-        yaxis_title=y
-    )
-    return fig
-
-# Plotly绘图 - 饼图
-def plot_pie(data: pd.DataFrame, values: str, names: str, title: str) -> go.Figure:
-    """
-    绘制饼图（占比分析）
-    
-    Args:
-        data: 数据源
-        values: 值字段
-        names: 名称字段
-        title: 图表标题
-    
-    Returns:
-        go.Figure: 饼图对象
-    """
-    fig = px.pie(data, values=values, names=names)
-    fig.update_layout(
-        title=title
-    )
-    return fig
-
-# Plotly绘图 - 散点图
-def plot_scatter(data: pd.DataFrame, x: str, y: str, title: str, color=None, size=None) -> go.Figure:
-    """
-    绘制散点图（相关性分析）
-    
-    Args:
-        data: 数据源
-        x: x轴字段
-        y: y轴字段
-        title: 图表标题
-        color: 颜色分组字段（可选）
-        size: 大小映射字段（可选）
-    
-    Returns:
-        go.Figure: 散点图对象
-    """
-    fig = px.scatter(data, x=x, y=y, color=color, size=size)
-    fig.update_layout(
-        title=title,
-        xaxis_title=x,
-        yaxis_title=y
-    )
-    return fig
-
-# Plotly绘图 - 箱线图
-def plot_box(data: pd.DataFrame, x: str, y: str, title: str) -> go.Figure:
-    """
-    绘制箱线图（分布分析）
-    
-    Args:
-        data: 数据源
-        x: x轴字段（分组）
-        y: y轴字段（数值）
-        title: 图表标题
-    
-    Returns:
-        go.Figure: 箱线图对象
-    """
-    fig = px.box(data, x=x, y=y)
-    fig.update_layout(
-        title=title,
-        xaxis_title=x,
-        yaxis_title=y
-    )
-    return fig
-
-# Plotly绘图 - 热力图
-def plot_heatmap(data: pd.DataFrame, x: str, y: str, z: str, title: str) -> go.Figure:
-    """
-    绘制热力图
-    
-    Args:
-        data: 数据源
-        x: x轴字段
-        y: y轴字段
-        z: 值字段
-        title: 图表标题
-    
-    Returns:
-        go.Figure: 热力图对象
-    """
-    # 检查数据是否为空
-    if data.empty:
-        fig = go.Figure()
-        fig.update_layout(
-            title=title,
-            xaxis_title=x,
-            yaxis_title=y,
-            annotations=[{
-                'text': 'No data available for heatmap',
-                'xref': 'paper',
-                'yref': 'paper',
-                'showarrow': False,
-                'font': {'size': 16}
-            }]
-        )
-        return fig
-    
-    # 尝试转换时间字段
-    for col in [x, y]:
-        if col in data.columns:
-            try:
-                data[col] = pd.to_datetime(data[col])
-            except:
-                pass
-    
-    # 检查z字段是否存在且有值
-    if z not in data.columns or data[z].isnull().all():
-        fig = go.Figure()
-        fig.update_layout(
-            title=title,
-            xaxis_title=x,
-            yaxis_title=y,
-            annotations=[{
-                'text': 'No valid data for heatmap values',
-                'xref': 'paper',
-                'yref': 'paper',
-                'showarrow': False,
-                'font': {'size': 16}
-            }]
-        )
-        return fig
-    
-    fig = px.density_heatmap(data, x=x, y=y, z=z)
-    fig.update_layout(
-        title=title,
-        xaxis_title=x,
-        yaxis_title=y
-    )
-    
-    # 确保时间轴显示正确
-    for axis in ['xaxis', 'yaxis']:
-        if axis in fig.layout:
-            fig.layout[axis].type = 'date'
-    
-    return fig
-
-# 计算漏斗转化率
-def calculate_funnel(category: str = None) -> pd.DataFrame:
-    """
-    计算转化漏斗数据
-    
-    Args:
-        category: 可选的商品类别过滤
-    
-    Returns:
-        DataFrame: 包含各阶段人数和转化率的漏斗数据
-    """
-    # 统计各事件类型的用户数，使用events表
-    query = """
-    SELECT event_type, COUNT(DISTINCT session_id) as count
-    FROM events
-    WHERE session_id IS NOT NULL
-    GROUP BY event_type
-    ORDER BY CASE 
-        WHEN event_type = 'Page View' THEN 1
-        WHEN event_type = 'View' THEN 1
-        WHEN event_type = 'Add to Cart' THEN 2
-        WHEN event_type = 'Cart' THEN 2
-        WHEN event_type = 'Purchase' THEN 3
-        ELSE 4
-    END
-    """
-    
-    df = run_sql_query(query)
+    df = calculate_rfm()
     
     if 'error' in df.columns:
         return df
     
-    # 检查数据是否为空
     if df.empty:
-        # 返回空DataFrame，包含必要的列
-        empty_df = pd.DataFrame({
-            'step': [],
-            'count': [],
-            'conversion_rate': [],
-            'stage_conversion_rate': []
+        return pd.DataFrame({
+            'segment': [],
+            'customer_count': [],
+            'avg_recency': [],
+            'avg_frequency': [],
+            'avg_monetary': [],
+            'total_revenue': []
         })
-        return empty_df
     
-    # 重命名事件为更友好的名称，并合并相似事件
-    event_map = {
-        'Page View': '浏览',
-        'View': '浏览',
-        'Add to Cart': '加购',
-        'Cart': '加购',
-        'Purchase': '购买'
-    }
-    df['step'] = df['event_type'].map(event_map)
+    # 按RFM分层分组统计
+    segment_stats = df.groupby('rfm_level').agg({
+        'user_id': 'count',
+        'recency': 'mean',
+        'frequency': 'mean',
+        'monetary': ['mean', 'sum']
+    }).reset_index()
     
-    # 移除未映射的事件
-    df = df.dropna(subset=['step'])
+    segment_stats.columns = ['segment', 'customer_count', 'avg_recency', 'avg_frequency', 'avg_monetary', 'total_revenue']
     
-    # 检查数据是否为空
-    if df.empty:
-        # 返回空DataFrame，包含必要的列
-        empty_df = pd.DataFrame({
-            'step': [],
-            'count': [],
-            'conversion_rate': [],
-            'stage_conversion_rate': []
-        })
-        return empty_df
+    # 计算百分比
+    segment_stats['revenue_percentage'] = (segment_stats['total_revenue'] / segment_stats['total_revenue'].sum() * 100).round(2)
     
-    # 合并相同步骤的数据
-    df_grouped = df.groupby('step')['count'].sum().reset_index()
+    # 排序
+    segment_order = ['重要价值客户', '潜力客户', '一般客户', '流失客户']
+    segment_stats['segment'] = pd.Categorical(segment_stats['segment'], categories=segment_order, ordered=True)
+    segment_stats = segment_stats.sort_values('segment')
     
-    # 重新排序步骤
-    step_order = {'浏览': 0, '加购': 1, '购买': 2}
-    df_grouped = df_grouped.sort_values(by='step', key=lambda x: x.map(step_order))
+    return segment_stats
+
+# 图表生成
+def generate_chart(data: pd.DataFrame, chart_type: str, x_column: str, y_column: str = None, 
+                   title: str = "", color_column: str = None) -> go.Figure:
+    """
+    生成图表
     
-    # 重置索引以确保正确的顺序
-    df_grouped = df_grouped.reset_index(drop=True)
+    Args:
+        data: 数据
+        chart_type: 图表类型（bar, line, pie, histogram, scatter）
+        x_column: X轴列名
+        y_column: Y轴列名
+        title: 图表标题
+        color_column: 颜色分组列名
+        
+    Returns:
+        Figure: Plotly图表对象
+    """
+    if data.empty:
+        fig = go.Figure()
+        fig.update_layout(title="暂无数据")
+        return fig
     
-    # 计算转化率
-    if not df_grouped.empty:
-        # 找到浏览阶段的用户数作为基数
-        if '浏览' in df_grouped['step'].values:
-            total_views = df_grouped[df_grouped['step'] == '浏览']['count'].iloc[0]
-            df_grouped['conversion_rate'] = df_grouped['count'] / total_views * 100
-            
-            # 计算阶段间转化率
-            df_grouped['stage_conversion_rate'] = 0.0
-            for i in range(1, len(df_grouped)):
-                if df_grouped['count'].iloc[i-1] > 0:
-                    df_grouped.loc[df_grouped.index[i], 'stage_conversion_rate'] = df_grouped['count'].iloc[i] / df_grouped['count'].iloc[i-1] * 100
+    try:
+        if chart_type == 'bar':
+            fig = px.bar(data, x=x_column, y=y_column, color=color_column, title=title)
+        elif chart_type == 'line':
+            fig = px.line(data, x=x_column, y=y_column, color=color_column, title=title)
+        elif chart_type == 'pie':
+            fig = px.pie(data, values=y_column, names=x_column, title=title)
+        elif chart_type == 'histogram':
+            fig = px.histogram(data, x=x_column, color=color_column, title=title)
+        elif chart_type == 'scatter':
+            fig = px.scatter(data, x=x_column, y=y_column, color=color_column, title=title)
         else:
-            # 如果没有浏览数据，不计算转化率，显示N/A
-            df_grouped['conversion_rate'] = None
-            df_grouped['stage_conversion_rate'] = None
-    
-    return df_grouped[['step', 'count', 'conversion_rate', 'stage_conversion_rate']]
+            fig = px.bar(data, x=x_column, y=y_column, title=title)
+        
+        # 设置中文显示
+        fig.update_layout(font=dict(family="SimHei, sans-serif"))
+        
+        return fig
+    except Exception as e:
+        fig = go.Figure()
+        fig.update_layout(title=f"图表生成失败: {str(e)}")
+        return fig
 
-# 计算A/B组转化率
-def get_ab_conversion(category: str = None) -> pd.DataFrame:
+def plot_bar(data: pd.DataFrame, x: str, y: str = None, title: str = "", color: str = None) -> go.Figure:
+    """绘制柱状图"""
+    return generate_chart(data, 'bar', x, y, title, color)
+
+def plot_line(data: pd.DataFrame, x: str, y: str = None, title: str = "", color: str = None) -> go.Figure:
+    """绘制折线图"""
+    return generate_chart(data, 'line', x, y, title, color)
+
+def plot_pie(data: pd.DataFrame, names: str, values: str, title: str = "") -> go.Figure:
+    """绘制饼图"""
+    return generate_chart(data, 'pie', names, values, title)
+
+def plot_scatter(data: pd.DataFrame, x: str, y: str, title: str = "", color: str = None) -> go.Figure:
+    """绘制散点图"""
+    return generate_chart(data, 'scatter', x, y, title, color)
+
+def plot_box(data: pd.DataFrame, x: str, y: str = None, title: str = "", color: str = None) -> go.Figure:
+    """绘制箱线图"""
+    if data.empty:
+        fig = go.Figure()
+        fig.update_layout(title="暂无数据")
+        return fig
+    
+    try:
+        fig = px.box(data, x=x, y=y, color=color, title=title)
+        fig.update_layout(font=dict(family="SimHei, sans-serif"))
+        return fig
+    except Exception as e:
+        fig = go.Figure()
+        fig.update_layout(title=f"图表生成失败: {str(e)}")
+        return fig
+
+def plot_heatmap(data: pd.DataFrame, x: str, y: str, color: str, title: str = "") -> go.Figure:
+    """绘制热力图"""
+    if data.empty:
+        fig = go.Figure()
+        fig.update_layout(title="暂无数据")
+        return fig
+    
+    try:
+        fig = px.density_heatmap(data, x=x, y=y, z=color, title=title)
+        fig.update_layout(font=dict(family="SimHei, sans-serif"))
+        return fig
+    except Exception as e:
+        fig = go.Figure()
+        fig.update_layout(title=f"图表生成失败: {str(e)}")
+        return fig
+
+def plot_funnel(data: pd.DataFrame, stage: str, value: str, title: str = "") -> go.Figure:
+    """绘制漏斗图"""
+    if data.empty:
+        fig = go.Figure()
+        fig.update_layout(title="暂无数据")
+        return fig
+    
+    try:
+        fig = go.Figure(go.Funnel(
+            y=data[stage],
+            x=data[value],
+            textinfo="value+percent previous",
+            textposition="inside"
+        ))
+        fig.update_layout(title=title, font=dict(family="SimHei, sans-serif"))
+        return fig
+    except Exception as e:
+        fig = go.Figure()
+        fig.update_layout(title=f"图表生成失败: {str(e)}")
+        return fig
+
+# 指标计算
+def calculate_metrics(metric_list: list) -> pd.DataFrame:
     """
-    获取A/B组的转化率数据
+    计算指定的指标列表
     
     Args:
-        category: 可选的商品类别过滤
-    
+        metric_list: 指标名称列表
+        
     Returns:
-        DataFrame: 包含A/B组转化率数据
+        DataFrame: 包含指标值
     """
-    # 由于数据库中没有user_events表，使用events表
-    # 并基于discount_pct字段模拟A/B组（有折扣为A组，无折扣为B组）
-    query = """
-    SELECT 
-        CASE 
-            WHEN discount_pct > 0 THEN 'A' -- 有折扣组
-            ELSE 'B' -- 无折扣组
-        END as "group",
-        COUNT(DISTINCT session_id) as total_users,
-        SUM(CASE WHEN event_type = 'Purchase' THEN 1 ELSE 0 END) as conversions,
-        SUM(CASE WHEN event_type = 'Purchase' THEN 1 ELSE 0 END) * 1.0 / COUNT(DISTINCT session_id) as conversion_rate
-    FROM events
-    WHERE session_id IS NOT NULL
-    GROUP BY "group"
-    """
+    metrics_data = []
     
-    return run_sql_query(query)
-
-# 计算A/B测试ROI
-def calculate_ab_roi(control_conv: int, control_n: int, test_conv: int, test_n: int, avg_order_value: float, monthly_active_users: int) -> dict:
-    """
-    计算A/B测试的ROI
+    for metric in metric_list:
+        if metric == 'total_orders':
+            df = run_sql_query("SELECT COUNT(*) as value FROM orders")
+            value = df['value'].iloc[0] if not df.empty else 0
+            metrics_data.append({'metric': '订单总数', 'value': value})
+        elif metric == 'total_revenue':
+            df = run_sql_query("SELECT SUM(total_usd) as value FROM orders")
+            value = df['value'].iloc[0] if not df.empty else 0
+            metrics_data.append({'metric': '总销售额', 'value': round(value, 2)})
+        elif metric == 'avg_order_value':
+            df = run_sql_query("SELECT AVG(total_usd) as value FROM orders")
+            value = df['value'].iloc[0] if not df.empty else 0
+            metrics_data.append({'metric': '平均订单金额', 'value': round(value, 2)})
+        elif metric == 'customer_count':
+            df = run_sql_query("SELECT COUNT(DISTINCT customer_id) as value FROM orders")
+            value = df['value'].iloc[0] if not df.empty else 0
+            metrics_data.append({'metric': '客户总数', 'value': value})
+        elif metric == 'conversion_rate':
+            df_events = run_sql_query("SELECT COUNT(DISTINCT session_id) as views FROM events WHERE event_type='view'")
+            df_orders = run_sql_query("SELECT COUNT(DISTINCT session_id) as orders FROM orders")
+            views = df_events['views'].iloc[0] if not df_events.empty else 1
+            orders = df_orders['orders'].iloc[0] if not df_orders.empty else 0
+            metrics_data.append({'metric': '转化率', 'value': round(orders / views * 100, 2)})
+        elif metric == 'active_sessions':
+            df = run_sql_query("SELECT COUNT(DISTINCT session_id) as value FROM sessions")
+            value = df['value'].iloc[0] if not df.empty else 0
+            metrics_data.append({'metric': '活跃会话数', 'value': value})
+        else:
+            metrics_data.append({'metric': metric, 'value': '未知指标'})
     
-    Args:
-        control_conv: 对照组转化人数
-        control_n: 对照组总人数
-        test_conv: 实验组转化人数
-        test_n: 实验组总人数
-        avg_order_value: 平均订单价值
-        monthly_active_users: 月活跃用户数
-    
-    Returns:
-        dict: 包含ROI计算结果
-    """
-    # 计算转化率
-    control_rate = control_conv / control_n if control_n > 0 else 0
-    test_rate = test_conv / test_n if test_n > 0 else 0
-    rate_diff = test_rate - control_rate
-    
-    # 计算额外转化数
-    additional_conversions = monthly_active_users * rate_diff
-    
-    # 计算额外收入
-    additional_revenue = additional_conversions * avg_order_value
-    
-    # 假设测试成本（可根据实际情况调整）
-    test_cost = 10000  # 示例值
-    
-    # 计算ROI
-    roi = (additional_revenue - test_cost) / test_cost * 100 if test_cost > 0 else 0
-    
-    return {
-        'additional_conversions': round(additional_conversions, 2),
-        'additional_revenue': round(additional_revenue, 2),
-        'test_cost': test_cost,
-        'roi': round(roi, 2)
-    }
+    return pd.DataFrame(metrics_data)

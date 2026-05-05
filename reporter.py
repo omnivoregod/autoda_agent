@@ -789,15 +789,11 @@ class Reporter:
         data_summary_string = ""
         table_schema_info = ""
 
-        # 总是从数据库获取所有表的结构信息，确保LLM能看到完整的数据库schema
-        import sqlite3
+        # 总是从数据库获取所有表的结构信息，确保LLM能看到完整的数据库schema（使用语义表名匹配）
+        from tools import get_available_tables, get_table_columns
         try:
-            conn = sqlite3.connect('ecommerce.db')
-            cursor = conn.cursor()
-            
-            # 检查所有表
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = cursor.fetchall()
+            # 获取所有表名
+            tables = get_available_tables('ecommerce.db')
             
             # 如果传入了data，先用data构建data_summary_string
             if data is not None and not data.empty:
@@ -810,24 +806,23 @@ class Reporter:
             
             table_schema_info = ""
             
-            for table in tables:
-                table_name = table[0]
+            for table_name in tables:
                 # 检查表结构
-                cursor.execute(f"PRAGMA table_info({table_name});")
-                columns = cursor.fetchall()
+                columns = get_table_columns('ecommerce.db', table_name)
                 if columns:
-                    # 检查表数据量
-                    cursor.execute(f"SELECT COUNT(*) FROM {table_name};")
-                    count = cursor.fetchone()[0]
+                    # 检查表数据量（使用语义匹配查询）
+                    from tools import run_sql_query
+                    count_df = run_sql_query(f"SELECT COUNT(*) as cnt FROM {table_name}")
+                    count = count_df['cnt'].iloc[0] if not count_df.empty and 'cnt' in count_df.columns else 0
+                    
                     data_summary_string += f"\n表名: {table_name}\n"
                     data_summary_string += f"数据行数: {count}\n"
                     data_summary_string += f"数据列数: {len(columns)}\n\n"
                     
                     # 构建表结构信息
                     table_schema_info += f"\n=== {table_name} 表 ===\n"
-                    table_schema_info += "\n".join([f"{col[1]}: {col[2]}" for col in columns])
+                    table_schema_info += "\n".join([f"{col}: TEXT" for col in columns])
                     table_schema_info += "\n"
-            conn.close()
         except Exception:
             # 如果数据库操作失败，使用默认值
             if data is not None and not data.empty:

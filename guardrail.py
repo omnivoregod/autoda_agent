@@ -561,25 +561,22 @@ class Guardrail:
                     issues.append(f"严重错误：缺少必要的字段类型：{', '.join(missing_field_types)}。可用字段：{', '.join(available_fields)}")
             # 流量与用户行为转化相关：需要事件类型和会话标识
             elif any(keyword in user_input_lower for keyword in ['流量', '用户行为', '转化', '漏斗', '会话', '加购率', '转化率', '转化漏斗']):
-                # 特殊处理：检查数据库中是否存在events表，并且包含必要的字段
-                import sqlite3
+                # 特殊处理：检查数据库中是否存在events表（使用语义表名匹配），并且包含必要的字段
+                from tools import get_available_tables, get_table_columns, match_table_name
                 has_event_fields = False
                 try:
-                    conn = sqlite3.connect('ecommerce.db')
-                    cursor = conn.cursor()
+                    # 获取可用表名并进行语义匹配
+                    available_tables = get_available_tables('ecommerce.db')
+                    matched_table = match_table_name('events', available_tables)
                     
-                    # 检查events表是否存在
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='events'")
-                    if cursor.fetchone():
-                        # 检查events表是否包含必要的字段
-                        cursor.execute("PRAGMA table_info(events)")
-                        columns = cursor.fetchall()
-                        event_columns = [col[1].lower() for col in columns]
+                    if matched_table:
+                        # 检查表是否包含必要的字段
+                        columns = get_table_columns('ecommerce.db', matched_table)
+                        event_columns = [col.lower() for col in columns]
                         
                         # 检查是否包含event_type和session_id字段
                         if 'event_type' in event_columns and 'session_id' in event_columns:
                             has_event_fields = True
-                    conn.close()
                 except Exception:
                     # 数据库操作失败，使用默认检查
                     pass
