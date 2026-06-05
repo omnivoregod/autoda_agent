@@ -118,6 +118,9 @@ autoda_agent/
 - 调用 `context_agent.clarify_requirement()` 解析用户输入
 - 调用 `metric_tree.build_metric_tree()` 构建业务指标体系
 
+![需求诊断与指标体系](docs/images/autoda-diagnosis-metrics.png)
+*诊断指标面板展示核心业务指标，帮助快速定位分析重点*
+
 ### 阶段2️⃣：字段语义分析与需求匹配
 - 扫描数据库所有表的字段结构
 - 调用 `field_semantic.analyze_field_semantics()` 分析字段语义
@@ -137,8 +140,14 @@ autoda_agent/
 - 调用 `report_generator.generate_comprehensive_report()` 生成综合报告
 - **数据可视化生成**：根据用户需求和数据分析类型自动生成图表
 
+![方案输出与商业决策](docs/images/autoda-actions-recommendations.png)
+*智能推荐面板展示业务行动建议，助力商业决策*
+
 ### 阶段6️⃣：效果追踪闭环
 - 调用 `tracking.generate_performance_report()` 生成追踪配置
+
+![效果追踪与ROI分析](docs/images/autoda-insights-roi.png)
+*ROI分析面板展示投资回报率和效果追踪数据*
 
 ## 企业级功能
 
@@ -202,6 +211,9 @@ df = conn.execute_query("SELECT * FROM orders LIMIT 10")
 2. **筛选数据**：结合原始数据和二次处理数据
 3. **选择图表类型**：柱状图、折线图、饼图、漏斗图、散点图等
 4. **生成图表**：使用Plotly生成交互式图表
+
+![数据可视化监控](docs/images/autoda-monitoring-visualization.png)
+*监控可视化面板展示多维度数据图表和实时指标*
 
 ## Docker部署
 
@@ -281,6 +293,9 @@ MYSQL_DATABASE=autoda
 2. **选择分析模式**：标准分析 或 智能分析
 3. **输入分析需求**：描述您的业务分析需求
 4. **查看分析结果**：包含核心指标、深度洞察、业务建议和可视化图表
+
+![首页查询界面](docs/images/autoda-home-query .png)
+*首页查询界面支持输入业务分析需求，选择不同分析模式*
 
 ## 配置说明
 
