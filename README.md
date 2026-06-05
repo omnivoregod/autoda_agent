@@ -294,7 +294,7 @@ MYSQL_DATABASE=autoda
 3. **输入分析需求**：描述您的业务分析需求
 4. **查看分析结果**：包含核心指标、深度洞察、业务建议和可视化图表
 
-![首页查询界面](docs/images/autoda-home-query .png)
+![首页查询界面](docs/images/autoda-home-query%20.png)
 *首页查询界面支持输入业务分析需求，选择不同分析模式*
 
 ## 配置说明
